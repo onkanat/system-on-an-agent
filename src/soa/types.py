@@ -24,6 +24,10 @@ class Result:
     data: Any = None
     error: str | None = None
     action: str | None = None
+    # Set when the step failed by raising: the bus turns the exception into a
+    # failed Result instead of letting it escape, and keeps it here so callers
+    # (the run loop, add-on hooks) can still inspect what actually went wrong.
+    exception: BaseException | None = None
 
     def text(self) -> str:
         """Human-readable form of the result."""

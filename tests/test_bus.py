@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from soa.bus import Bus
 from soa.connectors import ConnectorRegistry, EchoConnector, FileConnector
 from soa.memory import Memory
@@ -131,9 +129,47 @@ def test_connector_is_called_once_when_it_raises_type_error(tmp_path: Path):
 
     connector = Fragile()
     bus = Bus(Memory(), SkillLibrary(), ConnectorRegistry([connector]))
-    with pytest.raises(TypeError, match="real bug"):
-        bus.dispatch_step("connector.send", {"connector": "fragile", "payload": "x"})
+    result = bus.dispatch_step("connector.send", {"connector": "fragile", "payload": "x"})
     assert connector.calls == 1
+    assert result.ok is False
+    assert result.action == "connector.send"
+    assert result.error == "TypeError: real bug inside the connector"
+    assert isinstance(result.exception, TypeError)
+
+
+def test_dispatch_step_reports_a_raising_step_as_a_failed_result():
+    class Broken:
+        name = "broken"
+        kind = "test"
+
+        def send(self, payload, **kwargs):
+            raise RuntimeError("connector exploded")
+
+    bus = Bus(Memory(), SkillLibrary(), ConnectorRegistry([Broken()]))
+    result = bus.dispatch_step("connector.send", {"connector": "broken", "payload": "x"})
+    assert result.ok is False
+    assert "connector exploded" in (result.error or "")
+    assert isinstance(result.exception, RuntimeError)
+
+
+def test_dispatch_step_catches_a_failure_raised_by_a_nested_dispatch():
+    class ExplodingEcho:
+        name = "echo"
+        kind = "test"
+
+        def send(self, payload, **kwargs):
+            raise RuntimeError("echo exploded")
+
+    skills = SkillLibrary()
+    for skill in builtin_skills():
+        skills.register(skill)
+    # The builtin `echo` skill re-dispatches onto the "echo" connector, so the
+    # exception is raised one dispatch level below dispatch_step.
+    bus = Bus(Memory(), skills, ConnectorRegistry([ExplodingEcho()]))
+    result = bus.dispatch_step("skill.run", {"name": "echo", "text": "hi"})
+    assert result.ok is False
+    assert "echo exploded" in (result.error or "")
+    assert isinstance(result.exception, RuntimeError)
 
 
 def test_named_connector_keeps_the_rest_of_the_payload(tmp_path: Path):

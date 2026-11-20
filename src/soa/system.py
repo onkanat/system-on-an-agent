@@ -116,9 +116,15 @@ class System:
             step = self.addons.fire_before_step(raw_step, context)
             try:
                 result = self.bus.dispatch_step(step.action, step.args)
-            except Exception as exc:  # noqa: BLE001 - hooks may observe any failure
+            except Exception as exc:  # noqa: BLE001 - a custom bus may still raise
                 self.addons.fire_on_error(step, exc, context)
                 result = BusResult(ok=False, error=str(exc), action=step.action)
+            else:
+                # The default bus reports a raising step as Result(ok=False)
+                # and carries the exception, so the hook keeps seeing it.
+                raised = getattr(result, "exception", None)
+                if raised is not None:
+                    self.addons.fire_on_error(step, raised, context)
             result = self.addons.fire_after_step(step, result, context)
             results.append(result)
             if not result.ok:

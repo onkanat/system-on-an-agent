@@ -23,10 +23,12 @@ def _invoke(fn: Callable[..., Result], body: Any, kwargs: dict[str, Any]) -> Res
         parameters = inspect.signature(fn).parameters
     except (TypeError, ValueError):  # builtins and C callables
         return fn(body, **kwargs)
-    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
-        return fn(body, **kwargs)
-    accepted = {key: value for key, value in kwargs.items() if key in parameters}
-    return fn(body, **accepted)
+    takes_any_keyword = any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    )
+    if not takes_any_keyword:
+        kwargs = {key: value for key, value in kwargs.items() if key in parameters}
+    return fn(body, **kwargs)
 
 
 class Bus:
@@ -60,8 +62,24 @@ class Bus:
         return Result(ok=False, error=f"unknown channel: {channel}", action=message.action)
 
     def dispatch_step(self, action: str, args: dict[str, Any] | None = None) -> Result:
-        """Translate a planner action into a bus message and dispatch it."""
-        args = dict(args or {})
+        """Translate a planner action into a bus message and dispatch it.
+
+        A step that fails by raising still comes back as a ``Result``: the
+        exception is reported in ``error`` and kept in ``Result.exception``, so
+        a direct bus caller does not have to wrap every step in try/except.
+        ``System.run`` fires the add-on ``on_error`` hook from that exception.
+        """
+        try:
+            return self._route_step(action, dict(args or {}))
+        except Exception as exc:  # noqa: BLE001 - a failed step is data, not control flow
+            return Result(
+                ok=False,
+                error=f"{type(exc).__name__}: {exc}",
+                action=action,
+                exception=exc,
+            )
+
+    def _route_step(self, action: str, args: dict[str, Any]) -> Result:
         if action.startswith("memory."):
             return self.dispatch(Message("memory", action.split(".", 1)[1], args))
         if action.startswith("skill."):
