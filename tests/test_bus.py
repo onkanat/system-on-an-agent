@@ -214,3 +214,10 @@ def test_bus_keeps_an_injected_empty_addon_loader():
     assert not loader  # empty loader is falsy: `addons or AddonLoader()` used to replace it
     bus = Bus(Memory(), SkillLibrary(), ConnectorRegistry([]), addons=loader)
     assert bus.addons is loader
+
+def test_connector_step_form_dispatches_by_action_name():
+    """`connector.<ad>` adımı, adı konnektör adı olarak kullanır (kalan alanlar = argüman)."""
+    bus = make_bus()
+    sonuc = bus.dispatch_step("connector.echo", {"selam": "dunya"})
+    assert sonuc.ok is True, sonuc.error
+    assert sonuc.data == {"selam": "dunya"}

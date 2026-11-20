@@ -153,12 +153,20 @@ class Bus:
         name = payload.pop("connector", None)
         if name is None:
             name = payload.pop("name", None)
+        adim_bicimi = name is None and action not in {"send", "call", "list"} and action in self.connectors
+        if adim_bicimi:
+            # `connector.<ad>` adım biçimi: adım adı kayıtlı bir konnektörse o konnektöre gider,
+            # kalan alanlar argüman olur. Kayıtlı değilse eski davranış (bilinmeyen eylem) korunur.
+            name = action
         if not name:
             return Result(ok=False, error="connector name is required", action=action)
         try:
             connector = self.connectors.get(name)
         except KeyError as exc:
             return Result(ok=False, error=str(exc).strip("\"'"), action=action)
+        if adim_bicimi:
+            body = payload.pop("payload") if "payload" in payload else payload
+            return _invoke(connector.send, body, payload)
         if action == "send":
             body = payload.pop("payload") if "payload" in payload else payload
             return _invoke(connector.send, body, payload)
