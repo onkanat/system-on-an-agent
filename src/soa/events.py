@@ -11,6 +11,10 @@ kalmıyordu (yeniden üretilemiyordu). Bu modül iki şeyi ayırır:
 
 Kayıt yeri varsayılanı ``~/.local/share/soa/runs/<gün>.jsonl``; ``SOA_RUN_DIR``
 ile değiştirilebilir (testler ve ürünler kendi dizinini verir).
+
+Sorgu yolu ``soa runs``'tur (bkz. ``read_runs``/``runs``). Bu kayıt DIŞ indekslere
+(ör. delta-iz) yazılmaz: soa başka bir aracın indeksine bağımlı olmaz — kullanıcı
+kararı, 23.11.2026.
 """
 
 from __future__ import annotations
