@@ -9,7 +9,7 @@ from soa.addons.loader import AddonLoader
 from soa.connectors import ConnectorRegistry
 from soa.memory import Memory
 from soa.skills import SkillLibrary
-from soa.types import Message, Result
+from soa.types import Message, Result, classify_error
 
 
 def _invoke(fn: Callable[..., Result], body: Any, kwargs: dict[str, Any]) -> Result:
@@ -59,7 +59,8 @@ class Bus:
             return self._connector(message)
         if channel == "system":
             return self._system(message)
-        return Result(ok=False, error=f"unknown channel: {channel}", action=message.action)
+        return Result(ok=False, error=f"unknown channel: {channel}", action=message.action,
+                      error_class="protocol")
 
     def dispatch_step(self, action: str, args: dict[str, Any] | None = None) -> Result:
         """Translate a planner action into a bus message and dispatch it.
@@ -77,6 +78,7 @@ class Bus:
                 error=f"{type(exc).__name__}: {exc}",
                 action=action,
                 exception=exc,
+                error_class=classify_error(exc),
             )
 
     def _route_step(self, action: str, args: dict[str, Any]) -> Result:
@@ -88,7 +90,8 @@ class Bus:
             return self.dispatch(Message("connector", action.split(".", 1)[1], args))
         if action.startswith("system."):
             return self.dispatch(Message("system", action.split(".", 1)[1], args))
-        return Result(ok=False, error=f"unknown action: {action}", action=action)
+        return Result(ok=False, error=f"unknown action: {action}", action=action,
+                      error_class="protocol")
 
     def _memory(self, message: Message) -> Result:
         action = message.action
@@ -111,7 +114,8 @@ class Bus:
                 data=self.memory.working.get(payload["key"]),
                 action="memory.get",
             )
-        return Result(ok=False, error=f"unknown memory action: {action}", action=action)
+        return Result(ok=False, error=f"unknown memory action: {action}", action=action,
+                      error_class="protocol")
 
     def _skill(self, message: Message) -> Result:
         action = message.action
@@ -143,7 +147,8 @@ class Bus:
             return result
         if action == "list":
             return Result(ok=True, data=self.skills.names(), action="skill.list")
-        return Result(ok=False, error=f"unknown skill action: {action}", action=action)
+        return Result(ok=False, error=f"unknown skill action: {action}", action=action,
+                      error_class="protocol")
 
     def _connector(self, message: Message) -> Result:
         action = message.action
@@ -159,11 +164,13 @@ class Bus:
             # kalan alanlar argüman olur. Kayıtlı değilse eski davranış (bilinmeyen eylem) korunur.
             name = action
         if not name:
-            return Result(ok=False, error="connector name is required", action=action)
+            return Result(ok=False, error="connector name is required", action=action,
+                          error_class="protocol")
         try:
             connector = self.connectors.get(name)
         except KeyError as exc:
-            return Result(ok=False, error=str(exc).strip("\"'"), action=action)
+            return Result(ok=False, error=str(exc).strip("\"'"), action=action,
+                          error_class="protocol")
         if adim_bicimi:
             body = payload.pop("payload") if "payload" in payload else payload
             return _invoke(connector.send, body, payload)
@@ -177,7 +184,8 @@ class Bus:
             return _invoke(connector.send, payload, {"method": method, **payload})
         if action == "list":
             return Result(ok=True, data=self.connectors.names(), action="connector.list")
-        return Result(ok=False, error=f"unknown connector action: {action}", action=action)
+        return Result(ok=False, error=f"unknown connector action: {action}", action=action,
+                      error_class="protocol")
 
     def _system(self, message: Message) -> Result:
         action = message.action
@@ -191,4 +199,5 @@ class Bus:
             return Result(ok=True, data=names, action="system.list_connectors")
         if action == "noop":
             return Result(ok=True, data="", action="system.noop")
-        return Result(ok=False, error=f"unknown system action: {action}", action=action)
+        return Result(ok=False, error=f"unknown system action: {action}", action=action,
+                      error_class="protocol")

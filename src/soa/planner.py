@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from soa.types import Result
+from soa.types import Result, classify_error
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,9 @@ class Plan:
     goal: str
     steps: list[Step]
     source: str = "rules"
+    # Sağlayıcı planı üretemediğinde NEDEN kural planına düşüldüğü:
+    # "provider" (çağrı yükseldi), "protocol" (geçersiz/boş JSON), None (düşmedi).
+    fallback_reason: str | None = None
 
 
 class LLMProvider(ABC):
@@ -77,6 +80,8 @@ class Planner:
 
     def __init__(self, llm: LLMProvider | None = None) -> None:
         self.llm = llm
+        # Son `plan()` çağrısında kural planına düşüldüyse SEBEBİ (ERROR_CLASSES).
+        self._fallback_reason: str | None = None
 
     def plan(self, goal: str, skill_names: Iterable[str] | None = None) -> Plan:
         """Build a plan for ``goal``.
@@ -86,10 +91,15 @@ class Planner:
         """
         names = [n.lower() for n in (skill_names or [])]
         if self.llm is not None:
+            self._fallback_reason = None
             llm_plan = self._plan_with_llm(goal, names)
             if llm_plan is not None:
                 return llm_plan
-        return Plan(goal=goal, steps=self._plan_with_rules(goal, names), source="rules")
+            reason = getattr(self, "_fallback_reason", "protocol")
+        else:
+            reason = None
+        return Plan(goal=goal, steps=self._plan_with_rules(goal, names),
+                    source="rules", fallback_reason=reason)
 
     def describe(self, plan: Plan) -> list[str]:
         return [
@@ -196,11 +206,21 @@ class Planner:
         try:
             raw = self.llm.complete(f"Goal: {goal}", system=system)
             data = json.loads(raw)
-        except Exception:  # noqa: BLE001 - any provider failure means "fall back"
+        except Exception as exc:  # noqa: BLE001 - any provider failure means "fall back"
             # A provider that raises (network down, timeout, rate limit, SDK
             # error) is exactly the case the rule-based planner exists for.
+            # NEDEN düşüldüğü sınıf olarak saklanır: tüketici metin eşleştirmesi
+            # yapmak zorunda kalmasın (sağlayıcı mesajı değişince karar kaymasın).
+            if isinstance(exc, json.JSONDecodeError):
+                self._fallback_reason = "protocol"
+            else:
+                sinif = classify_error(exc)
+                # Sağlayıcıdan gelen her hata geri düşme sebebidir; sınıf bilinmiyorsa
+                # "provider" yazılır (çağrı sağlayıcıdaydı, kural planı devraldı).
+                self._fallback_reason = "provider" if sinif in {"unknown", "connector"} else sinif
             return None
         if not isinstance(data, list) or not data:
+            self._fallback_reason = "protocol"
             return None
         steps: list[Step] = []
         for item in data:

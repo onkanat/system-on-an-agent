@@ -14,6 +14,7 @@ from soa.memory import Memory
 from soa.planner import LLMProvider, Plan, Planner, result_output
 from soa.skills import SkillLibrary, builtin_skills
 from soa.types import Result as BusResult
+from soa.types import classify_error
 
 
 @dataclass
@@ -34,12 +35,26 @@ class RunReport:
     def output(self) -> str:
         return result_output(self.results)
 
+    @property
+    def error_class(self) -> str | None:
+        """Düşen adımın SINIFI (``ERROR_CLASSES``) — çağıran metin eşleştirmesin.
+
+        Ölçüldü (23.11.2026): tüketici "connection refused" gibi metne bakıyordu;
+        sağlayıcı mesajı değişince geri düşme kararı sessizce bozuluyordu.
+        """
+        for sonuc in reversed(self.results):
+            if not sonuc.ok:
+                return sonuc.error_class
+        return None
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "goal": self.goal,
             "ok": self.ok,
             "skipped": self.skipped,
             "source": self.plan.source,
+            "fallback_reason": self.plan.fallback_reason,
+            "error_class": self.error_class,
             "steps": [
                 {
                     "action": step.action,
@@ -53,6 +68,7 @@ class RunReport:
                     "ok": result.ok,
                     "data": _jsonable(result.data),
                     "error": result.error,
+                    "error_class": result.error_class,
                     "action": result.action,
                 }
                 for result in self.results
@@ -118,7 +134,8 @@ class System:
                 result = self.bus.dispatch_step(step.action, step.args)
             except Exception as exc:  # noqa: BLE001 - a custom bus may still raise
                 self.addons.fire_on_error(step, exc, context)
-                result = BusResult(ok=False, error=str(exc), action=step.action)
+                result = BusResult(ok=False, error=str(exc), action=step.action,
+                                   error_class=classify_error(exc))
             else:
                 # The default bus reports a raising step as Result(ok=False)
                 # and carries the exception, so the hook keeps seeing it.
