@@ -10,6 +10,7 @@ from typing import Sequence
 
 from soa import __version__
 from soa.addons.loader import AddonError, AddonLoader
+from soa.events import Event, read_runs, runs, run_dir
 from soa.memory import LongTermMemory, Memory
 from soa.system import System
 
@@ -47,6 +48,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Print the run report as JSON.",
+    )
+    run_cmd.add_argument(
+        "--stream",
+        action="store_true",
+        help="Print run events (plan_ready, step_started, step_finished, token) as JSONL.",
+    )
+    run_cmd.add_argument(
+        "--no-log",
+        action="store_true",
+        help="Do not append to the run log (default: append).",
+    )
+
+    runs_cmd = sub.add_parser("runs", help="List recorded runs (newest first).")
+    runs_cmd.add_argument("--limit", type=int, default=10)
+    runs_cmd.add_argument(
+        "--events",
+        action="store_true",
+        help="Print raw event lines instead of one line per run.",
     )
 
     skills_cmd = sub.add_parser("skills", help="Inspect the skill library.")
@@ -108,8 +127,31 @@ def main(argv: Sequence[str] | None = None, out=None, err=None) -> int:
         return int(exc.code or 0)
 
     if args.command == "run":
-        report = system.run(args.goal)
+        akış = None
+        if args.stream:
+
+            def akış(olay: Event) -> None:
+                out.write(json.dumps(olay.as_dict(), ensure_ascii=False) + "\n")
+                out.flush()
+
+        report = system.run(args.goal, on_event=akış, run_log=False if args.no_log else None)
         return _print_run(report, as_json=args.json, out=out)
+    if args.command == "runs":
+        if args.events:
+            for satir in read_runs(limit=args.limit):
+                out.write(json.dumps(satir, ensure_ascii=False) + "\n")
+            return 0
+        kayitlar = runs(limit=args.limit)
+        if not kayitlar:
+            out.write(f"(kayıt yok: {run_dir()})\n")
+            return 0
+        for kayit in kayitlar:
+            durum = "ok" if kayit.get("ok") else (kayit.get("error_class") or "—")
+            out.write(
+                f"{kayit.get('started')}  {kayit.get('run_id')}  "
+                f"{kayit.get('steps')} adım  {durum}  {kayit.get('goal') or ''}\n"
+            )
+        return 0
     if args.command == "skills" and args.skills_command == "list":
         for skill in system.skills.list():
             out.write(f"{skill.name}: {skill.description}\n")

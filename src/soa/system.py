@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from soa.connectors import ConnectorRegistry, EchoConnector, FileConnector
 from soa.memory import Memory
 from soa.planner import LLMProvider, Plan, Planner, result_output
 from soa.skills import SkillLibrary, builtin_skills
+from soa.events import Event, EventSink, RunLog, compose, new_run_id
 from soa.types import Result as BusResult
 from soa.types import classify_error
 
@@ -25,6 +27,8 @@ class RunReport:
     plan: Plan
     results: list[BusResult] = field(default_factory=list)
     ok: bool = True
+    # Koşu kaydındaki satırlarla eşleştirme anahtarı (RunLog + delta-iz).
+    run_id: str | None = None
 
     @property
     def skipped(self) -> int:
@@ -50,6 +54,7 @@ class RunReport:
     def as_dict(self) -> dict[str, Any]:
         return {
             "goal": self.goal,
+            "run_id": self.run_id,
             "ok": self.ok,
             "skipped": self.skipped,
             "source": self.plan.source,
@@ -77,6 +82,21 @@ class RunReport:
         }
 
 
+def _planla(planner, goal: str, names: list[str], on_token):
+    """Plan üret; ``on_token`` destekleyen planlayıcıya ilet, eskisini bozma.
+
+    Üçüncü taraf planlayıcılar ``plan(goal, skill_names)`` imzasıyla yazılmış
+    olabilir; akış uğruna onları kırmak doğru değil (aşama 4 geriye uyumlu kalır).
+    """
+    try:
+        imza = inspect.signature(planner.plan)
+    except (TypeError, ValueError):  # C ile yazılmış/çağrılabilir nesne
+        return planner.plan(goal, names)
+    if "on_token" in imza.parameters:
+        return planner.plan(goal, names, on_token=on_token)
+    return planner.plan(goal, names)
+
+
 def _jsonable(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -100,6 +120,7 @@ class System:
         addons: AddonLoader | None = None,
         llm: LLMProvider | None = None,
         file_root: str | Path | None = None,
+        run_log: RunLog | None | bool = True,
     ) -> None:
         # `x or Default()` is unsafe here: SkillLibrary, ConnectorRegistry and
         # AddonLoader all define __len__, so an empty-but-configured instance is
@@ -120,16 +141,64 @@ class System:
         self.addons = AddonLoader() if addons is None else addons
         self.planner = Planner(llm=llm) if planner is None else planner
         self.bus = Bus(self.memory, self.skills, self.connectors, self.addons)
+        # Koşu kaydı: varsayılan AÇIK (koşular yeniden üretilebilsin). Testler
+        # SOA_RUN_DIR ile kendi dizinine yönlendirir; run_log=False kapatır.
+        if run_log is True:
+            self.run_log: RunLog | None = RunLog()
+        elif run_log is False or run_log is None:
+            self.run_log = None
+        else:
+            self.run_log = run_log
 
-    def run(self, goal: str) -> RunReport:
-        """Plan a goal and execute each step on the bus, firing add-on hooks."""
+    def run(
+        self,
+        goal: str,
+        *,
+        on_event: EventSink | None = None,
+        run_log: "RunLog | None | bool" = None,
+    ) -> RunReport:
+        """Plan a goal and execute each step on the bus, firing add-on hooks.
+
+        ``on_event`` olayları ANINDA alır (akış); verilmezse yalnız koşu kaydı
+        yazılır. ``run_log`` çağrı başına geçersiz kılar: ``True`` aç, ``False``
+        kapat, ``RunLog`` kendi dosyanı ver.
+        """
+        run_id = new_run_id()
+        if run_log is None:
+            kayit = self.run_log
+        elif run_log is True:
+            kayit = RunLog()
+        elif run_log is False:
+            kayit = None
+        else:
+            kayit = run_log
+        sink = compose(on_event, kayit)
+
+        def emit(kind: str, **alanlar) -> None:
+            sink(Event(kind=kind, run_id=run_id, **alanlar))
+
         context = HookContext(goal=goal)
-        plan = self.planner.plan(goal, self.skills.names())
+
+        def _token(parça: str) -> None:
+            if parça:
+                emit("token", text=parça)
+
+        plan = _planla(self.planner, goal, self.skills.names(), _token if sink else None)
         plan = self.addons.fire_before_plan(plan, context)
+        emit(
+            "plan_ready",
+            data={
+                "goal": goal,
+                "steps": len(plan.steps),
+                "source": plan.source,
+                "fallback_reason": plan.fallback_reason,
+            },
+        )
         results: list[BusResult] = []
         ok = True
-        for raw_step in plan.steps:
+        for index, raw_step in enumerate(plan.steps, start=1):
             step = self.addons.fire_before_step(raw_step, context)
+            emit("step_started", index=index, action=step.action, data={"args": step.args})
             try:
                 result = self.bus.dispatch_step(step.action, step.args)
             except Exception as exc:  # noqa: BLE001 - a custom bus may still raise
@@ -144,8 +213,23 @@ class System:
                     self.addons.fire_on_error(step, raised, context)
             result = self.addons.fire_after_step(step, result, context)
             results.append(result)
+            emit(
+                "step_finished",
+                index=index,
+                action=step.action,
+                ok=bool(result.ok),
+                error=result.error,
+                error_class=result.error_class,
+            )
             if not result.ok:
                 ok = False
                 break
-        report = RunReport(goal=goal, plan=plan, results=results, ok=ok)
-        return self.addons.fire_after_plan(plan, report, context)
+        report = RunReport(goal=goal, plan=plan, results=results, ok=ok, run_id=run_id)
+        rapor = self.addons.fire_after_plan(plan, report, context)
+        emit(
+            "run_finished",
+            ok=bool(rapor.ok),
+            error_class=getattr(rapor, "error_class", None),
+            data={"steps": len(results), "skipped": getattr(rapor, "skipped", 0)},
+        )
+        return rapor

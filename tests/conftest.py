@@ -9,6 +9,12 @@ from soa.system import System
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _kosu_kaydi_izole(tmp_path_factory, monkeypatch):
+    """Her test kendi koşu kaydı dizinine yazar — ev dizinine sızmasın."""
+    monkeypatch.setenv("SOA_RUN_DIR", str(tmp_path_factory.mktemp("soa-runs")))
+
+
 @pytest.fixture
 def tmp_root(tmp_path: Path) -> Path:
     return tmp_path

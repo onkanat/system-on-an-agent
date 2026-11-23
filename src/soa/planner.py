@@ -44,6 +44,15 @@ class LLMProvider(ABC):
     def complete(self, prompt: str, *, system: str | None = None) -> str:
         """Return a model completion for the given prompt."""
 
+    def stream(self, prompt: str, *, system: str | None = None):
+        """Parça parça cevap. Varsayılan: akışı olmayan sağlayıcı tek parça verir.
+
+        Akışı olan sağlayıcı (SSE/HTTP chunked) bunu ezer; `System.run` üretilen her
+        parçayı `token` olayı olarak yayar. Varsayılanın tek parça olması bilinçli:
+        sağlayıcı akış sunmuyorsa uydurma parçalama yapılmaz.
+        """
+        yield self.complete(prompt, system=system)
+
 
 # "then" is the explicit sequencer. "and then" is also accepted.
 _SPLIT = re.compile(r"\s+(?:and\s+then|then)\s+", re.IGNORECASE)
@@ -83,7 +92,13 @@ class Planner:
         # Son `plan()` çağrısında kural planına düşüldüyse SEBEBİ (ERROR_CLASSES).
         self._fallback_reason: str | None = None
 
-    def plan(self, goal: str, skill_names: Iterable[str] | None = None) -> Plan:
+    def plan(
+        self,
+        goal: str,
+        skill_names: Iterable[str] | None = None,
+        *,
+        on_token=None,
+    ) -> Plan:
         """Build a plan for ``goal``.
 
         If an LLM provider is attached, it is tried first. Any failure
@@ -92,7 +107,7 @@ class Planner:
         names = [n.lower() for n in (skill_names or [])]
         if self.llm is not None:
             self._fallback_reason = None
-            llm_plan = self._plan_with_llm(goal, names)
+            llm_plan = self._plan_with_llm(goal, names, on_token=on_token)
             if llm_plan is not None:
                 return llm_plan
             reason = getattr(self, "_fallback_reason", "protocol")
@@ -196,7 +211,7 @@ class Planner:
             f'Send "{clause}" through the echo connector',
         )
 
-    def _plan_with_llm(self, goal: str, skill_names: list[str]) -> Plan | None:
+    def _plan_with_llm(self, goal: str, skill_names: list[str], *, on_token=None) -> Plan | None:
         system = (
             "You are the planner for a System on an Agent. "
             "Return only a JSON array of steps. Each step is an object with "
@@ -204,7 +219,16 @@ class Planner:
             f"Known skills: {', '.join(skill_names) or '(none)'}."
         )
         try:
-            raw = self.llm.complete(f"Goal: {goal}", system=system)
+            if on_token is None:
+                raw = self.llm.complete(f"Goal: {goal}", system=system)
+            else:
+                # Akış: sağlayıcı parça parça veriyorsa her parça ANINDA iletilir,
+                # plan yine tam metinden kurulur (akış planı bozmaz).
+                parçalar: list[str] = []
+                for parça in self.llm.stream(f"Goal: {goal}", system=system):
+                    parçalar.append(parça)
+                    on_token(parça)
+                raw = "".join(parçalar)
             data = json.loads(raw)
         except Exception as exc:  # noqa: BLE001 - any provider failure means "fall back"
             # A provider that raises (network down, timeout, rate limit, SDK
