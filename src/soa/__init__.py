@@ -4,6 +4,7 @@ from soa.bus import Bus
 from soa.connectors import Connector, EchoConnector, FileConnector
 from soa.memory import LongTermMemory, Memory, WorkingMemory
 from soa.planner import LLMProvider, Plan, Planner, Step
+from soa.policy import Policy, PolicyError
 from soa.skills import Skill, SkillLibrary
 from soa.system import RunReport, System
 from soa.types import Message, Result
@@ -20,6 +21,8 @@ __all__ = [
     "Message",
     "Plan",
     "Planner",
+    "Policy",
+    "PolicyError",
     "Result",
     "RunReport",
     "Skill",
